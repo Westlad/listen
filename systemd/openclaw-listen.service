@@ -1,0 +1,25 @@
+[Unit]
+Description=OpenClaw microphone listener
+Documentation=https://github.com/Westlad/listen
+Wants=network-online.target
+After=network-online.target sound.target
+
+[Service]
+Type=simple
+User=duncan
+Group=duncan
+SupplementaryGroups=audio
+WorkingDirectory=/home/duncan/git/listen
+EnvironmentFile=/home/duncan/git/listen/.env
+Environment=RUST_LOG=info
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=PIPEWIRE_RUNTIME_DIR=/run/user/1000
+Environment=PULSE_SERVER=unix:/run/user/1000/pulse/native
+ExecStart=/home/duncan/git/listen/target/release/listen daemon
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

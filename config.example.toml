@@ -1,0 +1,36 @@
+[openclaw]
+# Local default:
+# gateway_url = "ws://127.0.0.1:18789"
+#
+# Example LAN setup:
+# gateway_url = "ws://192.168.1.50:18789"
+# If mDNS resolves only to a link-local IPv6 address, use a scoped literal instead:
+# gateway_url = "ws://[fe80::1234:5678:abcd:ef01%eth0]:18789"
+gateway_url = "ws://127.0.0.1:18789"
+gateway_token = ""
+session_key = ""
+session_filter = ""
+
+[openai]
+api_key = ""
+base_url = "https://api.openai.com/v1"
+transcription_model = "whisper-1"
+# language = "en"
+# prompt = "The speaker is talking to an AI coding assistant."
+
+[audio]
+input_device = ""
+sample_rate_hz = 16000
+channel_count = 1
+
+[speech]
+level_threshold = 0.015
+start_window_ms = 120
+pre_roll_ms = 300
+trailing_silence_ms = 900
+min_utterance_ms = 500
+max_utterance_ms = 20000
+cooldown_ms = 400
+
+[logging]
+transcript_log_path = "/var/log/openclaw-listen.log"
