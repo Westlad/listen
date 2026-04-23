@@ -6,16 +6,16 @@ After=network-online.target sound.target
 
 [Service]
 Type=simple
-User=duncan
-Group=duncan
+User=@USER@
+Group=@USER@
 SupplementaryGroups=audio
-WorkingDirectory=/home/duncan/git/listen
-EnvironmentFile=/home/duncan/git/listen/.env
+WorkingDirectory=@REPO_ROOT@
+EnvironmentFile=@REPO_ROOT@/.env
 Environment=RUST_LOG=info
-Environment=XDG_RUNTIME_DIR=/run/user/1000
-Environment=PIPEWIRE_RUNTIME_DIR=/run/user/1000
-Environment=PULSE_SERVER=unix:/run/user/1000/pulse/native
-ExecStart=/home/duncan/git/listen/target/release/listen daemon
+Environment=XDG_RUNTIME_DIR=/run/user/@UID@
+Environment=PIPEWIRE_RUNTIME_DIR=/run/user/@UID@
+Environment=PULSE_SERVER=unix:/run/user/@UID@/pulse/native
+ExecStart=@REPO_ROOT@/target/release/listen daemon
 Restart=on-failure
 RestartSec=5s
 NoNewPrivileges=true

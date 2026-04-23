@@ -2,8 +2,11 @@ use std::time::Duration;
 
 use anyhow::Result;
 
-use crate::config::{AudioConfig, SpeechConfig};
+use crate::config::{AudioConfig, SpeechConfig, WakeConfig};
+use crate::wake_sidecar::WakeDetection;
 
+#[cfg(feature = "audio-cpal")]
+use crate::wake_sidecar::WakeSidecar;
 #[cfg(feature = "audio-cpal")]
 use anyhow::{Context, bail};
 #[cfg(feature = "audio-cpal")]
@@ -16,6 +19,11 @@ use std::collections::VecDeque;
 use std::sync::mpsc::{self, Receiver, SyncSender};
 #[cfg(feature = "audio-cpal")]
 use std::thread;
+
+#[cfg(feature = "audio-cpal")]
+const WAKE_SAMPLE_RATE_HZ: u32 = 16_000;
+#[cfg(feature = "audio-cpal")]
+const WAKE_FRAME_MS: usize = 80;
 
 #[derive(Debug, Clone)]
 pub struct AudioInput {
@@ -84,6 +92,19 @@ impl AudioInput {
         }
     }
 
+    pub fn capture_after_wake(&self, wake: &WakeConfig) -> Result<(WakeDetection, CapturedAudio)> {
+        #[cfg(feature = "audio-cpal")]
+        {
+            self.capture_with_cpal_after_wake(wake)
+        }
+
+        #[cfg(not(feature = "audio-cpal"))]
+        {
+            let _ = wake;
+            anyhow::bail!("microphone capture requires the `audio-cpal` feature")
+        }
+    }
+
     #[cfg(feature = "audio-cpal")]
     fn capture_with_cpal(&self) -> Result<CapturedAudio> {
         let device = self.select_input_device()?;
@@ -134,6 +155,64 @@ impl AudioInput {
             sample_rate_hz: self.audio.sample_rate_hz,
             duration,
         })
+    }
+
+    #[cfg(feature = "audio-cpal")]
+    fn capture_with_cpal_after_wake(
+        &self,
+        wake: &WakeConfig,
+    ) -> Result<(WakeDetection, CapturedAudio)> {
+        let device = self.select_input_device()?;
+        let stream_config = self.select_stream_config(&device)?;
+        let device_name = device
+            .name()
+            .unwrap_or_else(|_| "<unavailable-name>".to_string());
+
+        let (tx, rx) = mpsc::sync_channel::<Vec<f32>>(64);
+        let stream = build_input_stream(
+            &device,
+            &stream_config,
+            tx,
+            usize::from(stream_config.config.channels),
+        )?;
+        stream.play().context("failed to start microphone stream")?;
+
+        tracing::info!(
+            "listening on '{}' at {} Hz / {} channel(s) for wake word and command capture",
+            device_name,
+            stream_config.config.sample_rate.0,
+            stream_config.config.channels
+        );
+
+        let input_rate_hz = stream_config.config.sample_rate.0;
+        let detection = wait_for_wake_on_stream(&rx, input_rate_hz, wake)?;
+        tracing::info!("wake detected; waiting for command speech");
+
+        let mono = capture_until_pause(
+            rx,
+            input_rate_hz,
+            &self.speech,
+            Duration::from_millis(self.speech.cooldown_ms),
+        )?;
+        drop(stream);
+
+        let resampled = resample_mono(&mono, input_rate_hz, self.audio.sample_rate_hz);
+        if resampled.is_empty() {
+            bail!("captured audio buffer was empty after resampling");
+        }
+
+        let wav_bytes = encode_wav_mono_i16(&resampled, self.audio.sample_rate_hz)?;
+        let duration =
+            Duration::from_secs_f64(resampled.len() as f64 / self.audio.sample_rate_hz as f64);
+
+        Ok((
+            detection,
+            CapturedAudio {
+                wav_bytes,
+                sample_rate_hz: self.audio.sample_rate_hz,
+                duration,
+            },
+        ))
     }
 
     #[cfg(feature = "audio-cpal")]
@@ -387,6 +466,49 @@ fn capture_until_pause(
             }
         }
     }
+}
+
+#[cfg(feature = "audio-cpal")]
+fn wait_for_wake_on_stream(
+    rx: &Receiver<Vec<f32>>,
+    input_rate_hz: u32,
+    wake: &WakeConfig,
+) -> Result<WakeDetection> {
+    let mut sidecar = WakeSidecar::start(wake)?;
+    let wake_frame_samples = ((input_rate_hz as usize * WAKE_FRAME_MS) / 1000).max(1);
+    let mut pending = Vec::new();
+
+    loop {
+        if let Some(detection) = sidecar.try_detection() {
+            sidecar.stop();
+            return Ok(detection);
+        }
+
+        let chunk = rx
+            .recv()
+            .context("microphone stream ended before wake word was detected")?;
+        pending.extend(chunk);
+
+        while pending.len() >= wake_frame_samples {
+            let frame: Vec<f32> = pending.drain(..wake_frame_samples).collect();
+            let resampled = resample_mono(&frame, input_rate_hz, WAKE_SAMPLE_RATE_HZ);
+            let pcm = f32_samples_to_i16(&resampled);
+            sidecar.write_pcm_i16(&pcm)?;
+
+            if let Some(detection) = sidecar.try_detection() {
+                sidecar.stop();
+                return Ok(detection);
+            }
+        }
+    }
+}
+
+#[cfg(feature = "audio-cpal")]
+fn f32_samples_to_i16(samples: &[f32]) -> Vec<i16> {
+    samples
+        .iter()
+        .map(|sample| (sample.clamp(-1.0, 1.0) * i16::MAX as f32) as i16)
+        .collect()
 }
 
 #[cfg(feature = "audio-cpal")]

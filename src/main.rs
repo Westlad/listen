@@ -5,6 +5,7 @@ mod config;
 mod conversation_log;
 mod gateway;
 mod transcription;
+mod wake_sidecar;
 
 use anyhow::Result;
 

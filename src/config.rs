@@ -14,6 +14,8 @@ pub struct AppConfig {
     pub speech: SpeechConfig,
     #[serde(default)]
     pub logging: LoggingConfig,
+    #[serde(default)]
+    pub wake: WakeConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -73,6 +75,22 @@ pub struct LoggingConfig {
     pub transcript_log_path: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WakeConfig {
+    #[serde(default = "default_wake_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_wake_engine")]
+    pub engine: String,
+    #[serde(default = "default_wake_model_path")]
+    pub model_path: String,
+    #[serde(default = "default_wake_threshold")]
+    pub threshold: f32,
+    #[serde(default = "default_wake_sidecar_command")]
+    pub sidecar_command: String,
+    #[serde(default = "default_wake_sidecar_script")]
+    pub sidecar_script: String,
+}
+
 impl AppConfig {
     pub fn load(explicit_path: Option<&Path>) -> Result<Self> {
         load_dotenv()?;
@@ -88,6 +106,7 @@ impl AppConfig {
         };
 
         config.apply_env_overrides();
+        config.expand_paths();
         Ok(config)
     }
 
@@ -125,6 +144,33 @@ impl AppConfig {
         if let Ok(value) = env::var("OPENCLAW_LISTEN_LOG_PATH") {
             self.logging.transcript_log_path = value;
         }
+        if let Ok(value) = env::var("WAKE_WORD_ENABLED") {
+            self.wake.enabled = parse_bool_env(&value);
+        }
+        if let Ok(value) = env::var("WAKE_WORD_ENGINE") {
+            self.wake.engine = value;
+        }
+        if let Ok(value) = env::var("WAKE_WORD_MODEL_PATH") {
+            self.wake.model_path = value;
+        }
+        if let Ok(value) = env::var("WAKE_WORD_THRESHOLD") {
+            if let Ok(threshold) = value.parse::<f32>() {
+                self.wake.threshold = threshold;
+            }
+        }
+        if let Ok(value) = env::var("WAKE_WORD_SIDECAR_COMMAND") {
+            self.wake.sidecar_command = value;
+        }
+        if let Ok(value) = env::var("WAKE_WORD_SIDECAR_SCRIPT") {
+            self.wake.sidecar_script = value;
+        }
+    }
+
+    fn expand_paths(&mut self) {
+        self.logging.transcript_log_path = expand_env_value(&self.logging.transcript_log_path);
+        self.wake.model_path = expand_env_value(&self.wake.model_path);
+        self.wake.sidecar_command = expand_env_value(&self.wake.sidecar_command);
+        self.wake.sidecar_script = expand_env_value(&self.wake.sidecar_script);
     }
 }
 
@@ -170,6 +216,7 @@ impl Default for AppConfig {
                 cooldown_ms: default_cooldown_ms(),
             },
             logging: LoggingConfig::default(),
+            wake: WakeConfig::default(),
         }
     }
 }
@@ -178,6 +225,19 @@ impl Default for LoggingConfig {
     fn default() -> Self {
         Self {
             transcript_log_path: default_transcript_log_path(),
+        }
+    }
+}
+
+impl Default for WakeConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            engine: default_wake_engine(),
+            model_path: default_wake_model_path(),
+            threshold: default_wake_threshold(),
+            sidecar_command: default_wake_sidecar_command(),
+            sidecar_script: default_wake_sidecar_script(),
         }
     }
 }
@@ -207,6 +267,63 @@ fn default_transcription_model() -> String {
 
 fn default_transcript_log_path() -> String {
     "/var/log/openclaw-listen.log".to_string()
+}
+
+fn default_wake_engine() -> String {
+    "openwakeword".to_string()
+}
+
+const fn default_wake_enabled() -> bool {
+    true
+}
+
+fn default_wake_model_path() -> String {
+    dirs::config_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("openclaw-listen")
+        .join("wake")
+        .join("model.onnx")
+        .to_string_lossy()
+        .to_string()
+}
+
+fn default_wake_sidecar_command() -> String {
+    "python3".to_string()
+}
+
+fn default_wake_sidecar_script() -> String {
+    "scripts/openwakeword-sidecar.py".to_string()
+}
+
+const fn default_wake_threshold() -> f32 {
+    0.5
+}
+
+fn parse_bool_env(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "y" | "on"
+    )
+}
+
+fn expand_env_value(value: &str) -> String {
+    let home = env::var("HOME").unwrap_or_default();
+    let user = env::var("USER").unwrap_or_default();
+    let expanded = if let Some(rest) = value.strip_prefix("~/") {
+        if home.is_empty() {
+            value.to_string()
+        } else {
+            format!("{home}/{rest}")
+        }
+    } else {
+        value.to_string()
+    };
+
+    expanded
+        .replace("${HOME}", &home)
+        .replace("$HOME", &home)
+        .replace("${USER}", &user)
+        .replace("$USER", &user)
 }
 
 const fn default_sample_rate_hz() -> u32 {

@@ -11,6 +11,7 @@ use crate::config::{AppConfig, OpenClawConfig};
 use crate::conversation_log::ConversationLog;
 use crate::gateway::{GatewayConnection, OpenClawGatewayClient, SessionMessage, SessionSummary};
 use crate::transcription::OpenAiTranscriptionClient;
+use crate::wake_sidecar::WakeDetection;
 
 const RESPONSE_HISTORY_LIMIT: usize = 50;
 const RESPONSE_POLL_INTERVAL: Duration = Duration::from_secs(2);
@@ -51,6 +52,11 @@ async fn run_daemon(config: AppConfig) -> Result<()> {
         "transcript log path = {}",
         conversation_log.path().display()
     );
+    tracing::info!(
+        "wake word enabled = {}, model_path = {}",
+        config.wake.enabled,
+        config.wake.model_path
+    );
 
     gateway.describe_connectivity()?;
     transcriber.describe_configuration()?;
@@ -65,10 +71,21 @@ async fn run_daemon(config: AppConfig) -> Result<()> {
 
     loop {
         let audio_for_capture = audio.clone();
-        let mut capture_task =
-            tokio::task::spawn_blocking(move || audio_for_capture.capture_utterance());
+        let wake_config = config.wake.clone();
+        let wake_enabled = wake_config.enabled;
+        let mut capture_task = tokio::task::spawn_blocking(move || {
+            if wake_enabled {
+                audio_for_capture
+                    .capture_after_wake(&wake_config)
+                    .map(|(detection, captured)| (Some(detection), captured))
+            } else {
+                audio_for_capture
+                    .capture_utterance()
+                    .map(|captured| (None, captured))
+            }
+        });
 
-        let captured = tokio::select! {
+        let (wake_detection, captured) = tokio::select! {
             _ = signal::ctrl_c() => {
                 capture_task.abort();
                 tracing::info!("received Ctrl+C, stopping daemon");
@@ -76,6 +93,11 @@ async fn run_daemon(config: AppConfig) -> Result<()> {
             }
             result = &mut capture_task => result??,
         };
+
+        if let Some(detection) = wake_detection {
+            let target = resolve_target_session(&connection, &config.openclaw).await?;
+            conversation_log.append(&target.key, "system", &wake_detection_text(&detection))?;
+        }
 
         if let Some(transcript) = transcribe_capture(&transcriber, captured).await? {
             let target = resolve_target_session(&connection, &config.openclaw).await?;
@@ -301,6 +323,21 @@ async fn log_agent_responses(
 
 fn is_assistant_message(message: &SessionMessage) -> bool {
     message.role.as_deref() == Some("assistant")
+}
+
+fn wake_detection_text(detection: &WakeDetection) -> String {
+    format!(
+        "wake word detected{}{}",
+        detection
+            .model
+            .as_deref()
+            .map(|model| format!(" model={model}"))
+            .unwrap_or_default(),
+        detection
+            .score
+            .map(|score| format!(" score={score:.3}"))
+            .unwrap_or_default()
+    )
 }
 
 async fn resolve_target_session(

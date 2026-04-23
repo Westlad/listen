@@ -34,3 +34,11 @@ cooldown_ms = 400
 
 [logging]
 transcript_log_path = "/var/log/openclaw-listen.log"
+
+[wake]
+enabled = true
+engine = "openwakeword"
+model_path = "$HOME/.config/openclaw-listen/wake/model.onnx"
+threshold = 0.5
+sidecar_command = "python3"
+sidecar_script = "scripts/openwakeword-sidecar.py"

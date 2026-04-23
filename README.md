@@ -33,6 +33,12 @@ Environment variables:
 - `OPENAI_TRANSCRIPTION_PROMPT`
 - `AUDIO_INPUT_DEVICE`
 - `OPENCLAW_LISTEN_LOG_PATH`
+- `WAKE_WORD_ENABLED`
+- `WAKE_WORD_ENGINE`
+- `WAKE_WORD_MODEL_PATH`
+- `WAKE_WORD_THRESHOLD`
+- `WAKE_WORD_SIDECAR_COMMAND`
+- `WAKE_WORD_SIDECAR_SCRIPT`
 - `RUST_LOG`
 
 See [`config.example.toml`](./config.example.toml).
@@ -49,6 +55,7 @@ Example `.env`:
 ```bash
 OPENCLAW_GATEWAY_TOKEN=replace-me
 OPENAI_API_KEY=replace-me
+WAKE_WORD_MODEL_PATH=$HOME/.config/openclaw-listen/wake/model.onnx
 ```
 
 ## Target Session Selection
@@ -85,12 +92,27 @@ sudo apt install pkg-config libasound2-dev
 With `audio-cpal` enabled, the app will:
 
 - listen to the configured microphone
+- wait for an openWakeWord sidecar wake detection by default
 - wait for speech to cross the configured amplitude threshold
 - stop after trailing silence
 - resample to mono 16 kHz WAV
 - send the captured utterance to OpenAI for transcription
 - forward the resulting text to OpenClaw using `chat.send`
 - append transcribed speech and observed agent replies to `/var/log/openclaw-listen.log`
+
+## Wake Word
+
+Wake-word mode is enabled by default and uses a small Python sidecar at [`scripts/openwakeword-sidecar.py`](./scripts/openwakeword-sidecar.py).
+The Rust daemon owns the microphone stream and writes 16-bit 16 kHz mono PCM frames to the sidecar's stdin; the sidecar never opens the audio device itself.
+The default model path is `$HOME/.config/openclaw-listen/wake/model.onnx`; point `WAKE_WORD_MODEL_PATH` or `[wake].model_path` at any existing openWakeWord-compatible `.onnx` or `.tflite` model.
+
+Install the sidecar dependencies in the Python environment used by the service:
+
+```bash
+python3 -m pip install openwakeword numpy
+```
+
+In practice, say the wake word, wait a beat, then speak the command. The same long-lived Rust microphone stream is used for both wake detection and command capture.
 
 ## Transcript Log
 
@@ -108,12 +130,8 @@ Example entry:
 Build the release binary and install the bundled service and tmpfiles config:
 
 ```bash
-cargo build --release --features audio-cpal
-sudo install -m 0644 systemd/openclaw-listen.service /etc/systemd/system/openclaw-listen.service
-sudo install -m 0644 systemd/openclaw-listen.tmpfiles /etc/tmpfiles.d/openclaw-listen.conf
-sudo systemd-tmpfiles --create /etc/tmpfiles.d/openclaw-listen.conf
-sudo systemctl daemon-reload
+./scripts/install-systemd-service.sh
 sudo systemctl enable --now openclaw-listen.service
 ```
 
-The included unit expects this checkout at `/home/duncan/git/listen`, reads credentials from `/home/duncan/git/listen/.env`, and runs as user `duncan`.
+The installer renders the systemd unit for the current `$USER`, this checkout path, and the current user runtime directory.
