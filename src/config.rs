@@ -45,6 +45,8 @@ pub struct OpenAiConfig {
 pub struct AudioConfig {
     #[serde(default)]
     pub input_device: String,
+    #[serde(default = "default_input_gain")]
+    pub input_gain: f32,
     #[serde(default = "default_sample_rate_hz")]
     pub sample_rate_hz: u32,
     #[serde(default = "default_channel_count")]
@@ -89,6 +91,8 @@ pub struct WakeConfig {
     pub sidecar_command: String,
     #[serde(default = "default_wake_sidecar_script")]
     pub sidecar_script: String,
+    #[serde(default)]
+    pub debug_scores: bool,
 }
 
 impl AppConfig {
@@ -141,6 +145,11 @@ impl AppConfig {
         if let Ok(value) = env::var("AUDIO_INPUT_DEVICE") {
             self.audio.input_device = value;
         }
+        if let Ok(value) = env::var("AUDIO_INPUT_GAIN") {
+            if let Ok(gain) = value.parse::<f32>() {
+                self.audio.input_gain = gain;
+            }
+        }
         if let Ok(value) = env::var("OPENCLAW_LISTEN_LOG_PATH") {
             self.logging.transcript_log_path = value;
         }
@@ -163,6 +172,9 @@ impl AppConfig {
         }
         if let Ok(value) = env::var("WAKE_WORD_SIDECAR_SCRIPT") {
             self.wake.sidecar_script = value;
+        }
+        if let Ok(value) = env::var("WAKE_WORD_DEBUG_SCORES") {
+            self.wake.debug_scores = parse_bool_env(&value);
         }
     }
 
@@ -203,6 +215,7 @@ impl Default for AppConfig {
             },
             audio: AudioConfig {
                 input_device: String::new(),
+                input_gain: default_input_gain(),
                 sample_rate_hz: default_sample_rate_hz(),
                 channel_count: default_channel_count(),
             },
@@ -238,6 +251,7 @@ impl Default for WakeConfig {
             threshold: default_wake_threshold(),
             sidecar_command: default_wake_sidecar_command(),
             sidecar_script: default_wake_sidecar_script(),
+            debug_scores: false,
         }
     }
 }
@@ -328,6 +342,10 @@ fn expand_env_value(value: &str) -> String {
 
 const fn default_sample_rate_hz() -> u32 {
     16_000
+}
+
+const fn default_input_gain() -> f32 {
+    1.0
 }
 
 const fn default_channel_count() -> u16 {

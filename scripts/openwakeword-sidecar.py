@@ -26,6 +26,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model-path", required=True)
     parser.add_argument("--threshold", type=float, default=0.5)
     parser.add_argument("--chunk-ms", type=int, default=CHUNK_MS)
+    parser.add_argument("--debug-scores", action="store_true")
     return parser.parse_args()
 
 
@@ -36,9 +37,11 @@ def main() -> int:
         print(f"wake model not found: {model_path}", file=sys.stderr, flush=True)
         return 2
 
-    model = Model(wakeword_models=[str(model_path)])
+    model = Model(wakeword_model_paths=[str(model_path)])
     frame_samples = max(1, int(SAMPLE_RATE_HZ * args.chunk_ms / 1000))
     frame_bytes = frame_samples * 2
+    debug_interval_frames = max(1, round(1000 / args.chunk_ms))
+    frames_since_debug = 0
 
     print(
         json.dumps(
@@ -64,6 +67,32 @@ def main() -> int:
 
         frame = np.frombuffer(chunk, dtype=np.int16)
         prediction = model.predict(frame)
+        frames_since_debug += 1
+
+        if args.debug_scores and frames_since_debug >= debug_interval_frames:
+            frames_since_debug = 0
+            top_name, top_score = ("", 0.0)
+            if prediction:
+                top_name, top_score = max(prediction.items(), key=lambda item: float(item[1]))
+                top_score = float(top_score)
+
+            frame_f32 = frame.astype(np.float32) / 32768.0
+            rms = float(np.sqrt(np.mean(np.square(frame_f32)))) if frame_f32.size else 0.0
+            peak = float(np.max(np.abs(frame_f32))) if frame_f32.size else 0.0
+            print(
+                json.dumps(
+                    {
+                        "event": "debug_scores",
+                        "model": top_name,
+                        "score": top_score,
+                        "rms": rms,
+                        "peak": peak,
+                    }
+                ),
+                file=sys.stderr,
+                flush=True,
+            )
+
         for name, score in prediction.items():
             score = float(score)
             if score >= args.threshold:

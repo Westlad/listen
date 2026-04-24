@@ -20,6 +20,7 @@ transcription_model = "whisper-1"
 
 [audio]
 input_device = ""
+input_gain = 1.0
 sample_rate_hz = 16000
 channel_count = 1
 

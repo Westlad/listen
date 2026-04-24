@@ -37,7 +37,8 @@ impl WakeSidecar {
             config.model_path
         );
 
-        let mut child = Command::new(&config.sidecar_command)
+        let mut command = Command::new(&config.sidecar_command);
+        command
             .arg(&config.sidecar_script)
             .arg("--model-path")
             .arg(&config.model_path)
@@ -45,7 +46,13 @@ impl WakeSidecar {
             .arg(config.threshold.to_string())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            .stderr(Stdio::piped());
+
+        if config.debug_scores {
+            command.arg("--debug-scores");
+        }
+
+        let mut child = command
             .spawn()
             .with_context(|| format!("failed to start wake sidecar {}", config.sidecar_command))?;
 

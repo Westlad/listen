@@ -45,8 +45,9 @@ impl AudioInput {
 
     pub fn describe_configuration(&self) -> Result<()> {
         tracing::info!(
-            "audio input configured: device='{}', sample_rate_hz={}, channel_count={}, threshold={:.4}",
+            "audio input configured: device='{}', input_gain={:.2}, sample_rate_hz={}, channel_count={}, threshold={:.4}",
             self.audio.input_device,
+            self.audio.input_gain,
             self.audio.sample_rate_hz,
             self.audio.channel_count,
             self.speech.level_threshold
@@ -119,14 +120,16 @@ impl AudioInput {
             &stream_config,
             tx,
             usize::from(stream_config.config.channels),
+            self.audio.input_gain,
         )?;
         stream.play().context("failed to start microphone stream")?;
 
         tracing::info!(
-            "listening on '{}' at {} Hz / {} channel(s)",
+            "listening on '{}' at {} Hz / {} channel(s) with {:?} samples",
             device_name,
             stream_config.config.sample_rate.0,
-            stream_config.config.channels
+            stream_config.config.channels,
+            stream_config.sample_format,
         );
 
         let mono = capture_until_pause(
@@ -174,14 +177,16 @@ impl AudioInput {
             &stream_config,
             tx,
             usize::from(stream_config.config.channels),
+            self.audio.input_gain,
         )?;
         stream.play().context("failed to start microphone stream")?;
 
         tracing::info!(
-            "listening on '{}' at {} Hz / {} channel(s) for wake word and command capture",
+            "listening on '{}' at {} Hz / {} channel(s) with {:?} samples for wake word and command capture",
             device_name,
             stream_config.config.sample_rate.0,
-            stream_config.config.channels
+            stream_config.config.channels,
+            stream_config.sample_format,
         );
 
         let input_rate_hz = stream_config.config.sample_rate.0;
@@ -309,6 +314,7 @@ fn build_input_stream(
     stream_config: &ResolvedInputConfig,
     tx: SyncSender<Vec<f32>>,
     channels: usize,
+    gain: f32,
 ) -> Result<cpal::Stream> {
     let config = stream_config.config.clone();
     let err_fn = move |error: cpal::StreamError| {
@@ -319,7 +325,7 @@ fn build_input_stream(
         SampleFormat::F32 => device
             .build_input_stream(
                 &config,
-                move |data: &[f32], _| send_input_chunk_f32(data, channels, &tx),
+                move |data: &[f32], _| send_input_chunk_f32(data, channels, gain, &tx),
                 err_fn,
                 None,
             )
@@ -327,7 +333,7 @@ fn build_input_stream(
         SampleFormat::I16 => device
             .build_input_stream(
                 &config,
-                move |data: &[i16], _| send_input_chunk_i16(data, channels, &tx),
+                move |data: &[i16], _| send_input_chunk_i16(data, channels, gain, &tx),
                 err_fn,
                 None,
             )
@@ -335,7 +341,7 @@ fn build_input_stream(
         SampleFormat::U16 => device
             .build_input_stream(
                 &config,
-                move |data: &[u16], _| send_input_chunk_u16(data, channels, &tx),
+                move |data: &[u16], _| send_input_chunk_u16(data, channels, gain, &tx),
                 err_fn,
                 None,
             )
@@ -343,7 +349,7 @@ fn build_input_stream(
         SampleFormat::U8 => device
             .build_input_stream(
                 &config,
-                move |data: &[u8], _| send_input_chunk_u8(data, channels, &tx),
+                move |data: &[u8], _| send_input_chunk_u8(data, channels, gain, &tx),
                 err_fn,
                 None,
             )
@@ -353,34 +359,30 @@ fn build_input_stream(
 }
 
 #[cfg(feature = "audio-cpal")]
-fn send_input_chunk_f32(data: &[f32], channels: usize, tx: &SyncSender<Vec<f32>>) {
-    let _ = tx.try_send(downmix_to_mono(data, channels, |sample| {
-        sample.clamp(-1.0, 1.0)
-    }));
+fn send_input_chunk_f32(data: &[f32], channels: usize, gain: f32, tx: &SyncSender<Vec<f32>>) {
+    let mono = downmix_to_mono(data, channels, |sample| sample.clamp(-1.0, 1.0));
+    let _ = tx.try_send(apply_input_gain(mono, gain));
 }
 
 #[cfg(feature = "audio-cpal")]
-fn send_input_chunk_i16(data: &[i16], channels: usize, tx: &SyncSender<Vec<f32>>) {
+fn send_input_chunk_i16(data: &[i16], channels: usize, gain: f32, tx: &SyncSender<Vec<f32>>) {
     let scale = i16::MAX as f32;
-    let _ = tx.try_send(downmix_to_mono(data, channels, |sample| {
-        sample as f32 / scale
-    }));
+    let mono = downmix_to_mono(data, channels, |sample| sample as f32 / scale);
+    let _ = tx.try_send(apply_input_gain(mono, gain));
 }
 
 #[cfg(feature = "audio-cpal")]
-fn send_input_chunk_u16(data: &[u16], channels: usize, tx: &SyncSender<Vec<f32>>) {
-    let center = u16::MAX as f32 / 2.0;
-    let _ = tx.try_send(downmix_to_mono(data, channels, |sample| {
-        (sample as f32 - center) / center
-    }));
+fn send_input_chunk_u16(data: &[u16], channels: usize, gain: f32, tx: &SyncSender<Vec<f32>>) {
+    let center = (u16::MAX as f32 + 1.0) / 2.0;
+    let mono = downmix_to_mono(data, channels, |sample| (sample as f32 - center) / center);
+    let _ = tx.try_send(apply_input_gain(mono, gain));
 }
 
 #[cfg(feature = "audio-cpal")]
-fn send_input_chunk_u8(data: &[u8], channels: usize, tx: &SyncSender<Vec<f32>>) {
-    let center = u8::MAX as f32 / 2.0;
-    let _ = tx.try_send(downmix_to_mono(data, channels, |sample| {
-        (sample as f32 - center) / center
-    }));
+fn send_input_chunk_u8(data: &[u8], channels: usize, gain: f32, tx: &SyncSender<Vec<f32>>) {
+    let center = (u8::MAX as f32 + 1.0) / 2.0;
+    let mono = downmix_to_mono(data, channels, |sample| (sample as f32 - center) / center);
+    let _ = tx.try_send(apply_input_gain(mono, gain));
 }
 
 #[cfg(feature = "audio-cpal")]
@@ -399,6 +401,19 @@ where
         mono.push(total / frame.len() as f32);
     }
     mono
+}
+
+#[cfg(feature = "audio-cpal")]
+fn apply_input_gain(mut samples: Vec<f32>, gain: f32) -> Vec<f32> {
+    if (gain - 1.0).abs() < f32::EPSILON {
+        return samples;
+    }
+
+    for sample in &mut samples {
+        *sample = (*sample * gain).clamp(-1.0, 1.0);
+    }
+
+    samples
 }
 
 #[cfg(feature = "audio-cpal")]

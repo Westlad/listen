@@ -32,6 +32,7 @@ Environment variables:
 - `OPENAI_TRANSCRIPTION_LANGUAGE`
 - `OPENAI_TRANSCRIPTION_PROMPT`
 - `AUDIO_INPUT_DEVICE`
+- `AUDIO_INPUT_GAIN`
 - `OPENCLAW_LISTEN_LOG_PATH`
 - `WAKE_WORD_ENABLED`
 - `WAKE_WORD_ENGINE`
@@ -55,6 +56,7 @@ Example `.env`:
 ```bash
 OPENCLAW_GATEWAY_TOKEN=replace-me
 OPENAI_API_KEY=replace-me
+AUDIO_INPUT_GAIN=1.0
 WAKE_WORD_MODEL_PATH=$HOME/.config/openclaw-listen/wake/model.onnx
 ```
 
@@ -105,6 +107,7 @@ With `audio-cpal` enabled, the app will:
 Wake-word mode is enabled by default and uses a small Python sidecar at [`scripts/openwakeword-sidecar.py`](./scripts/openwakeword-sidecar.py).
 The Rust daemon owns the microphone stream and writes 16-bit 16 kHz mono PCM frames to the sidecar's stdin; the sidecar never opens the audio device itself.
 The default model path is `$HOME/.config/openclaw-listen/wake/model.onnx`; point `WAKE_WORD_MODEL_PATH` or `[wake].model_path` at any existing openWakeWord-compatible `.onnx` or `.tflite` model.
+If your microphone level runs low, increase `AUDIO_INPUT_GAIN` or `[audio].input_gain` so the wake model and Whisper both see a stronger signal.
 
 Install the sidecar dependencies in the Python environment used by the service:
 
