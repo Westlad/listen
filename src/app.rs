@@ -70,6 +70,7 @@ async fn run_daemon(config: AppConfig) -> Result<()> {
     );
 
     loop {
+        let turn_started_at = Instant::now();
         let audio_for_capture = audio.clone();
         let wake_config = config.wake.clone();
         let wake_enabled = wake_config.enabled;
@@ -94,14 +95,29 @@ async fn run_daemon(config: AppConfig) -> Result<()> {
             result = &mut capture_task => result??,
         };
 
+        tracing::info!(
+            "latency listen capture_ms={} captured_audio_ms={}",
+            turn_started_at.elapsed().as_millis(),
+            captured.duration.as_millis()
+        );
+
         if let Some(detection) = wake_detection {
             let target = resolve_target_session(&connection, &config.openclaw).await?;
             conversation_log.append(&target.key, "system", &wake_detection_text(&detection))?;
         }
 
-        if let Some(transcript) = transcribe_capture(&transcriber, captured).await? {
+        if let Some(transcript) =
+            transcribe_capture(&transcriber, captured, turn_started_at).await?
+        {
             let target = resolve_target_session(&connection, &config.openclaw).await?;
-            send_transcript(&connection, &target, &transcript, Some(&conversation_log)).await?;
+            send_transcript(
+                &connection,
+                &target,
+                &transcript,
+                Some(&conversation_log),
+                turn_started_at,
+            )
+            .await?;
         }
     }
 
@@ -172,7 +188,7 @@ async fn send_text(config: AppConfig, text: &str) -> Result<()> {
     gateway.describe_connectivity()?;
     let connection = gateway.connect().await?;
     let target = resolve_target_session(&connection, &config.openclaw).await?;
-    send_transcript(&connection, &target, text, None).await?;
+    send_transcript(&connection, &target, text, None, Instant::now()).await?;
     println!("Sent to {}", describe_session(&target));
     Ok(())
 }
@@ -185,8 +201,10 @@ async fn test_capture(config: AppConfig, send: bool) -> Result<()> {
     transcriber.describe_configuration()?;
     audio.describe_configuration()?;
 
+    let turn_started_at = Instant::now();
     let captured = tokio::task::spawn_blocking(move || audio.capture_utterance()).await??;
-    let Some(transcript) = transcribe_capture(&transcriber, captured).await? else {
+    let Some(transcript) = transcribe_capture(&transcriber, captured, turn_started_at).await?
+    else {
         println!("Transcript was empty.");
         return Ok(());
     };
@@ -198,7 +216,14 @@ async fn test_capture(config: AppConfig, send: bool) -> Result<()> {
         let connection = gateway.connect().await?;
         let target = resolve_target_session(&connection, &config.openclaw).await?;
         let conversation_log = ConversationLog::open(&config.logging.transcript_log_path)?;
-        send_transcript(&connection, &target, &transcript, Some(&conversation_log)).await?;
+        send_transcript(
+            &connection,
+            &target,
+            &transcript,
+            Some(&conversation_log),
+            turn_started_at,
+        )
+        .await?;
     }
 
     Ok(())
@@ -207,6 +232,7 @@ async fn test_capture(config: AppConfig, send: bool) -> Result<()> {
 async fn transcribe_capture(
     transcriber: &OpenAiTranscriptionClient,
     captured: CapturedAudio,
+    turn_started_at: Instant,
 ) -> Result<Option<String>> {
     tracing::info!(
         "captured {:.2}s of microphone audio at {} Hz; requesting transcription",
@@ -214,7 +240,13 @@ async fn transcribe_capture(
         captured.sample_rate_hz
     );
 
+    let transcription_started_at = Instant::now();
     let transcript = transcriber.transcribe_wav(captured.wav_bytes).await?;
+    tracing::info!(
+        "latency listen transcription_ms={} since_turn_start_ms={}",
+        transcription_started_at.elapsed().as_millis(),
+        turn_started_at.elapsed().as_millis()
+    );
     let text = transcript.text.trim().to_string();
     if text.is_empty() {
         tracing::info!("transcription returned empty text; skipping send");
@@ -230,6 +262,7 @@ async fn send_transcript(
     target: &SessionSummary,
     transcript: &str,
     conversation_log: Option<&ConversationLog>,
+    turn_started_at: Instant,
 ) -> Result<()> {
     let known_messages = if conversation_log.is_some() {
         known_message_fingerprints(connection, &target.key).await?
@@ -241,6 +274,7 @@ async fn send_transcript(
         conversation_log.append(&target.key, "user", transcript)?;
     }
 
+    let send_started_at = Instant::now();
     let ack = connection
         .send_message(&target.key, transcript, true)
         .await?;
@@ -250,6 +284,11 @@ async fn send_transcript(
         ack.status,
         ack.run_id,
         ack.message_seq
+    );
+    tracing::info!(
+        "latency listen gateway_send_ms={} since_turn_start_ms={}",
+        send_started_at.elapsed().as_millis(),
+        turn_started_at.elapsed().as_millis()
     );
 
     if let Some(conversation_log) = conversation_log {
